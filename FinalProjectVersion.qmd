@@ -1,0 +1,497 @@
+---
+title: "The Mile High Market: A Comprehensive Analysis of Denver’s Airbnb Ecosystem"
+subtitle: "Data Wrangling and Analysis"
+author: "Rohan Jaspal and Max Heller"
+format: 
+  html:
+    theme: cosmo
+    toc: true
+    title-block-banner: true
+---
+
+
+# Introduction
+
+Airbnb is an incredibly useful resource for people and travelers to get housing almost anywhere in the world. Airbnb offers many flexible lodging options for visitors like a couple looking for a romantic get away in a secluded cabin in the mountains or for a traveling construction crew that can accompany a five-person team and a place to store there equipment. Because Airbnb can be used in many different ways, it is important for frequent Airbnb members and hosts to understand the patterns that exist within a local short-term rental market. In this project we are going to be focusing on the Airbnb listing from Denver to give perspective on the short term living ecosystem. To do this, we have compiled three core questions.
+
+1. **How do Airbnbs differ across geographic locations in Denver?**
+2. **How do Airbnb metrics vary by host?**
+3. **How do Airbnb metrics vary by property type?**
+
+To answer these questions, we use the Denver Airbnb listing data from Inside Airbnb. Our approach uses data cleaning, summary statistics, tables, and visualizations. By the end of this analysis will be able to help you see and understand key metrics for short-term rentals in the city of Denver.
+
+# Packages Required
+```{r}
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(plotly)
+library(ggplot2) 
+library(sf)   
+library(lubridate)
+```
+
+The `tidyverse` package is used for the main data wrangling workflow. It includes tools for importing data, filtering rows, selecting variables, creating new variables, summarizing data, and working with tibbles.
+
+The `plotly` package is used to create interactive visualizations. This allows some graphs to be explored more easily by hovering over points, zooming, or viewing values directly on the plot.
+
+The `ggplot2` package is used to create polished static graphs. It helps show patterns in Airbnb listings, such as price differences, listing counts, room types, and neighborhood-level trends.
+
+The `sf` package is used for spatial data. Since this project uses Denver neighborhood geographic data, `sf` allows the neighborhood GeoJSON file to be imported, joined with summary data, and mapped.
+
+The `lubridate` package is used for working with date and time data. In this project, it allows host longevity to be calculated by converting "host_since" strings into usable dates, making it possible to find the specific year a host joined.
+
+# Data Preparation
+
+## About the Denver Airbnb Dataset
+
+This project uses two files from [Inside Airbnb](https://insideairbnb.com/get-the-data/) for Denver, Colorado. The main file, `listings.csv.gz`, contains detailed listing-level data for Airbnb rentals in Denver. The second file, `neighbourhoods.geojson`, contains geographic boundary data for Denver neighborhoods, which allows us to connect Airbnb listings to specific locations across the city.
+
+The original listings dataset contains 79 variables, including information about the listing, host, neighborhood, property type, room type, price, reviews, and availability. Many variables contain missing values. Some missing values appear as formatted `N/A` values, while others appear as blank cells. Because of this, part of the cleaning process involves identifying missing values, selecting the variables most useful for our analysis, and preparing the data for summaries and visualizations.
+
+| File | Description | Key fields |
+|:---|:---|:---|
+| `listings.csv` | Detailed listings data for Airbnb rentals in Denver | id, host_about, host_since, host_response_rate, host_acceptance_rate, neighbourhood_cleansed, latitude, longitude, property_type, price, estimated_revenue_l365d, accommodates, bathrooms, review_scores_rating |
+| `neighbourhoods.geojson` | GeoJSON file of neighborhoods in the city | neighborhood name, geographic boundary data |
+
+Together, these files allow us to study Airbnb activity from multiple perspectives. The listings file helps us analyze how metrics such as price, availability, reviews, host activity, and property type vary across Denver. The neighborhood GeoJSON file allows us to connect those listing patterns to geographic locations, making it possible to compare Airbnb activity across different parts of the city.
+
+## Cleaning Process
+
+### Step 1 (Cleaning listings.csv):
+We used the code below to load the data from listings.csv, which is contained in a GitHub repository. During the import process, we instructed the program to recognize empty cells and "N/A" strings as formal missing values (NA). This addressed the previously mentioned irregularities in the raw dataset. Following the import, we filtered the data to include only the variables of interest, ensuring the analysis remains focused and efficient.
+
+After selecting the relevant variables, we dropped all rows containing missing values to prevent errors during the calculation and visualization phases. We then performed several data type transformations:
+
+- Currency: The `price` variable was converted to a numeric type, with the "$" symbol and commas removed to enable mathematical analysis.
+
+- Rates: We converted `host_response_rate` and `host_acceptance_rate` to numeric decimals, ensuring these percentages could be used in calculations without interference from character symbols.
+
+- Categorical Data: Finally, `neighborhood` and `property_type` were converted into factors to properly represent them as categorical variables for modeling and grouping.
+```{r}
+#| message: false
+#| warning: false
+
+url <- "https://raw.githubusercontent.com/rsjaspal/rsjaspal.github.io/main/airbnb.csv"
+
+my_data_clean <- read_csv(url, na = c("", "N/A")) |>
+  select(
+    id, 
+    host_about,
+    host_since, 
+    host_response_rate,
+    host_acceptance_rate,
+    estimated_revenue_l365d,
+    neighborhood = neighbourhood_cleansed, 
+    latitude, 
+    longitude, 
+    property_type,       
+    price, 
+    availability_365, 
+    review_scores_rating,
+    accommodates,
+    bathrooms 
+  ) |> 
+  drop_na() |> 
+  mutate(
+    price = as.numeric(gsub("[\\$,]", "", price)),
+    host_since = as.Date(host_since),
+    host_response_rate = as.numeric(gsub("%", "", host_response_rate)) / 100,
+    host_acceptance_rate = as.numeric(gsub("%", "", host_acceptance_rate)) / 100,
+    neighborhood = as.factor(neighborhood),
+    property_type = as.factor(property_type)
+  )
+```
+
+#### The dataset after cleaning:
+
+```{r}
+#| message: false
+#| warning: false
+
+head(my_data_clean)
+tail(my_data_clean)
+```
+
+### Step 2 (Importing neighbourhoods.geojson):
+
+We used the recommended code from the project instructions. We used neighbourhoods.geojson to create a sf object we can use alongside our other dataset.The file is contained in the same GitHub repository.
+
+```{r}
+#| message: false
+#| warning: false
+
+url2 <- "https://raw.githubusercontent.com/rsjaspal/rsjaspal.github.io/main/neighbourhoods.geojson"
+
+my_map <- st_read(url2) 
+```
+
+
+### Step 3 (Filtering my_data_clean for host analysis):
+
+We created a new dataframe with distinct hosts. The cleaned dataframe included many listings for each individual host. Our project rquires that we complete analysis on host metrics so we didn't want repeat values for hosts with many listings. In order to find disting hots we altered the original dataset so it would only include rows with distinct host descriptions and host join dates.
+
+```{r}
+#| message: false
+#| warning: false
+
+unique_hosts <- my_data_clean |>
+  distinct(host_about, host_since, .keep_all = TRUE)
+
+```
+
+#### The dataset after cleaning:
+
+```{r}
+#| message: false
+#| warning: false
+
+head(unique_hosts)
+tail(unique_hosts)
+```
+## Variables of Interest 
+
+| Variable | Explanation | 
+|:---|:---|
+| id | Unique number for each Airbnb listing. |
+| host_about | Description written by the host about themselves. |
+| host_since | Date the host joined Airbnb. |
+| host_response_rate | Percent of guest messages the host responds to. |
+| host_acceptance_rate | Percent of booking requests the host accepts. |
+| neighbourhood_cleansed | Cleaned Denver neighborhood name for the listing. |
+| latitude | North-south location coordinate for the listing. |
+| longitude | East-west location coordinate for the listing. |
+| property_type | Specific type of rental property. |
+| price | Nightly price of the Airbnb listing. |
+| estimated_revenue_l365d | Estimated revenue from the last 365 days. |
+| availability_365 | Number of days available in the next year. |
+| accommodates | Number of guests the listing can fit. |
+| bathrooms | Number of bathrooms in the listing. |
+| review_scores_rating | Overall guest rating for the listing. |
+
+# Exploratory Data Analysis
+
+## How do Airbnbs metrics differ across geographic locations in Denver?
+
+
+### Is there a difference in listing price across neighborhoods?
+
+The purpose of this graph is to visualize the geographic distribution of listing prices across Denver's neighborhoods. By mapping average prices onto a spatial grid, we can understand the specific prices in individual communities.
+
+```{r}
+#| message: false
+#| warning: false
+
+# Creating a neighborhood-level summary of average listing price
+neighborhood_prices <- my_data_clean |>
+  group_by(neighborhood) |>
+  summarize(avg_price = mean(price, na.rm = TRUE))
+
+# Left joing the neighborhood price to the Denver neighborhood map data
+map_data <- my_map |>
+  left_join(neighborhood_prices, by = c("neighbourhood" = "neighborhood"))
+
+# Creating the map for each neighborhood to be colored by its average price
+p <- ggplot(data = map_data) +
+  geom_sf(aes(fill = avg_price, label = neighbourhood)) +
+  scale_fill_viridis_c(option = "viridis", labels = scales::label_dollar()) +
+  theme_minimal() +
+  labs(title = "Average Price per Denver Neighborhood")
+
+# Converting the ggplot to be an interactive plotly map
+ggplotly(p)
+
+```
+<br>
+This map reveals a pronounced pricing gradient in Denver. There is a high-value central area, with neighborhoods like Cherry Creek or Belcaro where average prices peak above $400. In contrast, the outside of the city, particularly the northeast strip leading toward the airport, remains significantly more affordable, with most areas averaging between $100 and $200.
+
+### Is there a difference in guest rating across neighborhoods?
+
+The goal of this map is to evaluate service quality and guest satisfaction geographically. By mapping review scores, we expect to determine if high-priced areas (from the previous map) actually deliver a superior experience, or if neighborhoods with lower prices provide higher satisfaction.
+
+```{r}
+#| message: false
+#| warning: false
+
+# Creating the neighborhood-level summary by the average guest rating
+neighborhood_ratings <- my_data_clean |>
+  group_by(neighborhood) |>
+  summarize(avg_rating = mean(review_scores_rating, na.rm = TRUE))
+
+# Left joining the neighborhood ratings to the denver neighborhood map data
+map_rating_data <- my_map |>
+  left_join(neighborhood_ratings, by = c("neighbourhood" = "neighborhood"))
+
+# Creating the map for each neighborhood to be colored by its average guest rating
+p2 <- ggplot(data = map_rating_data) +
+  geom_sf(aes(fill = avg_rating, label = neighbourhood)) +
+  scale_fill_viridis_c(option = "plasma") +
+  theme_minimal() +
+  labs(title = "Average Guest Rating by Denver Neighborhood",
+       fill = "Avg Rating")
+
+# Converting the ggplot to be an interactive plotly map
+ggplotly(p2)
+```
+<br>
+The map reveals that Denver maintains a high standard of hospitality overall with most neighborhoods averaging near-perfect scores between 4.8 and 5.0. However, there is a notable quality gap in the northeast area near the airport, where ratings dip towards 4.4. Interestingly, high ratings aren't exclusive to the expensive central areas. Many budget-friendly outskirts perform just as well as expensive areas. This suggests that guest ratings in Denver are driven more by service and value than just price.
+
+### Is there a difference in host revenue across neighborhoods?
+
+The purpose of this visualization is to identify the earning potential of rentals across Denver by calculating the median estimated revenue per neighborhood. We expect to find that while high listing prices often correlate with high revenue, rentals in mid-priced, high-demand areas might actually yield higher revenue.
+
+```{r}
+#| message: false
+#| warning: false
+
+# Creating the median estimated revenue from the neighborhood-level
+neighborhood_revenue <- my_data_clean |>
+  group_by(neighborhood) |>
+  summarize(med_rev = median(estimated_revenue_l365d, na.rm = TRUE))
+
+# Left joing the neighborhood revenue to the denver neighborhood map data
+map_rev_data <- my_map |>
+  left_join(neighborhood_revenue, by = c("neighbourhood" = "neighborhood"))
+
+# Another map where each neighborhod is colored by its median estimated revenue
+rev_p <- ggplot(data = map_rev_data) +
+  geom_sf(aes(fill = med_rev, label = neighbourhood)) +
+  
+  scale_fill_viridis_c(option = "inferno", labels = scales::label_dollar() ) +
+  theme_minimal() +
+  labs(title = "Median Annual Revenue by Denver Neighborhood",
+       subtitle = "Estimated earnings over the last 365 days",
+       fill = "Median Revenue"
+  )
+
+# Converting the ggplot to be an interactive plotly map
+ggplotly(rev_p)
+
+```
+<br>
+The map shows that most Denver neighborhoods earning a median of $10,000 to $20,000 per year. Higher revenue neighborhoods are concentrated in specific southern and central areas where earnings exceed $30,000. This suggests these areas benefit from higher prices and occupancy. Conversely, the northeast corridor and several northern districts show the lowest revenue yields (under $10,000), likely due to lower prices and decreased tourist appeal compared to the city's center.
+
+## How do Airbnb metrics vary by host?
+
+### Does host experience impact reviews?
+
+The purpose of this line graph is to determine if host experience correlates with the quality of the guest experience. By tracking average ratings based on the year a host joined the platform, we expect to see if older hosts provide more consistent, high-quality or if newer hosts receive higher ratings.
+
+```{r}
+#| message: false
+#| warning: false
+
+# Need to create a summary table that groups host by year they joined Airbnb
+host_experience_trend <- unique_hosts |>
+  mutate(year_joined = year(as.Date(host_since))) |>
+  group_by(year_joined) |>
+  summarize( avg_rating = mean(review_scores_rating, na.rm = TRUE)) 
+
+
+# A line graph showing the joined year(x) by average review rating(y)
+p_unique <- ggplot(host_experience_trend, aes(x = year_joined, y = avg_rating)) +
+  geom_line(color = "lightpink", size = 1) +
+  geom_point(aes(text = paste("Year:", year_joined))) +
+  theme_minimal() +
+  labs(title = "Does Experience Impact Quality?",
+       subtitle = "Average rating by host join year (Unique Hosts Only)",
+       x = "Year Joined",
+       y = "Average Rating"
+  )
+
+# We need to convert the ggplot graph to an interactive plotly graph
+ggplotly(p_unique, tooltip = "text")
+```
+<br>
+The data shows that average ratings have historically fluctuated within a high range (4.88 to 4.97). It's interesting to note that there is a sharp decline in average ratings for the newest hosts joining after 2022, with scores dropping toward 4.80. While veteran hosts (those who joined around 2009) have noticeably higher ratings, most long-term hosts receive around the same rating. This suggests that the impact of experience on ratings is most severe for newer hosts. These hosts may be suffering because of lack of experience or possibly higher standards and a more saturated environment.
+
+### Does host response rate impact guest ratings?
+The purpose of this boxplot is to examine the relationship between host communication and overall guest satisfaction. We expect to find that hosts with a 100% response rate achieve higher and more consistent review scores, as quick communication is often a primary factor in a positive guest experience.
+```{r}
+#| message: false
+#| warning: false
+
+
+# Creating groups of 4 bins for box plot readability
+response_rate_data <- unique_hosts |>
+  mutate(rate_bucket = case_when(
+    host_response_rate == 1.00 ~ "100%",
+    host_response_rate >= 0.95 ~ "95-99%",
+    host_response_rate >= 0.90 ~ "90-94%",
+    TRUE ~ "< 90%")) |>
+
+  # Putting the group rates in order and changing them to factors
+  mutate(rate_bucket = factor(rate_bucket, 
+                              levels = c("100%", "95-99%", "90-94%", "< 90%")))
+
+# Box plot that compares the guest ratings across the response rate groups
+p_rate <- ggplot(response_rate_data, aes(x = rate_bucket, 
+                                         y = review_scores_rating, 
+                                         fill = rate_bucket)) +
+  
+  geom_boxplot(outlier.shape = NA) + 
+  coord_cartesian(ylim = c(4.0, 5.0)) +
+  theme_minimal() +
+  scale_fill_viridis_d(option = "viridis", begin = 0.2, end = 0.8) +
+  labs(
+    title = "Host Response Rate vs. Guest Ratings",
+    x = "Response Rate Bucket",
+    y = "Review Score"
+  ) +
+  theme(legend.position = "none")
+
+# Making the box plot interactive
+ggplotly(p_rate)
+```
+<br>
+The data confirms a clear link between communication and consistency. Hosts with a 100% response rate maintain the highest median scores and the narrowest interquartile range, indicating reliably excellent guest experiences. While hosts with lower response rates still achieve high median ratings, their significantly larger IQRs and longer whiskers reveal a lot more volatility. Basically, as responsiveness slips, the likelihood of receiving a poor review increases.
+### Does host acceptance rate impact estimated revenue?
+
+This plot compares host acceptance rate with estimated revenue over the last 365 days. The goal is to see whether hosts who accept more booking requests also tend to earn more revenue.
+
+```{r}
+#| message: false
+#| warning: false
+
+# Creating scatter plot comparing host acceptance rate(x) by estimated revenue(y)
+plot_ly(
+  data = unique_hosts,
+  x = ~host_acceptance_rate,
+  y = ~estimated_revenue_l365d,
+  type = "scatter",
+  mode = "markers",
+  marker = list(
+    color = "orange",
+    opacity = 0.7
+  )
+) |>
+  layout(
+    title = "Host Acceptance Rate vs. Estimated Revenue",
+    xaxis = list(title = "Host Acceptance Rate"),
+    yaxis = list(title = "Estimated Revenue in Last 365 Days")
+  )
+```
+<br>
+The scatter plot shows that estimated revenue varies widely across hosts. Some hosts with high acceptance rates earn more revenue, but there are also many hosts with high acceptance rates who earn much less. This suggests that acceptance rate alone does not fully explain revenue. Other factors, such as property type, price, availability, and neighborhood, likely also affect how much revenue a host earns.
+
+## How do Airbnb metrics vary by property type?
+
+### Do Airbnbs with more bathrooms have higher prices?
+
+This box plot compares nightly price across different bathroom counts. To keep the chart readable, bathroom values above 6 are removed because those groups are rare and make the boxes difficult to see.
+
+```{r}
+#| message: false
+#| warning: false
+
+# we need to filter out bathroom values above 6 because anymore bathrooms cause unreliable boxes
+bathroom_box_data <- my_data_clean |>
+  filter(bathrooms <= 6)
+
+# box plot type to represent price for each bathroom count
+plot_ly(
+  data = bathroom_box_data,
+  x = ~as.factor(bathrooms),
+  y = ~price,
+  type = "box",
+  line = list(color = "blue")
+) |>
+  plotly::layout(
+    title = list(text = "Nightly Price by Number of Bathrooms"),
+    xaxis = list(title = "Number of Bathrooms"),
+    yaxis = list(title = "Nightly Price")
+  )
+```
+<br>
+The box plot we are able to show that listings with more bathrooms generally have higher nightly prices and that most listings have 1 - 5 bathrooms. There were listings with 11 bathrooms but cutting the chart off at 6 bathrooms keeps the main pattern easier to see because very large bathroom counts are uncommon in the data. The total bathrooms by nightly prices have a generally positive trend, so it is fair for us to assume that more bathrooms might lead to an increase in rental price.
+
+### Do Airbnbs with higher guest capacity generate more revenue?
+
+This bar graph compares the median estimated revenue for Airbnb listings based on how many guests the listing can accommodate. This helps determine whether larger listings tend to generate more revenue.
+
+```{r}
+#| message: false
+#| warning: false
+
+# need to create subset of group listings by guest capacity with median revenue
+accommodates_revenue <- my_data_clean |>
+  group_by(accommodates) |>
+  summarise(
+    median_revenue = median(estimated_revenue_l365d),
+    listing_count = n(),
+    .groups = "drop"
+  ) |>
+  arrange(accommodates)
+
+# gotta have fun once in while
+accommodates_colors <- rainbow(nrow(accommodates_revenue))
+
+# bar plot with created subset with accommodates(x) by median_revenue(y)
+plot_ly(
+  data = accommodates_revenue,
+  x = ~as.factor(accommodates),
+  y = ~median_revenue,
+  type = "bar",
+  marker = list(color = accommodates_colors)
+) |>
+  layout(
+    title = "Median Estimated Revenue by Guest Capacity",
+    xaxis = list(title = "Number of Guests Accommodated"),
+    yaxis = list(title = "Median Estimated Revenue in Last 365 Days")
+  )
+```
+<br>
+The graph shows that revenue generally increases as a listing can accommodate more guests. Larger listings usually have higher prices, which can lead to higher estimated revenue. However, the increase is not perfectly consistent, meaning guest capacity helps explain revenue but does not completely determine it.
+
+
+### Do different property types generate more revenue?
+
+This horizontal bar graph compares median estimated revenue across different Airbnb property types.
+
+```{r}
+#| message: false
+#| warning: false
+
+# need to create subset of group listings by property type with median revenue
+property_revenue <- my_data_clean |>
+  group_by(property_type) |>
+  summarise(
+    median_revenue = median(estimated_revenue_l365d),
+    listing_count = n(),
+    .groups = "drop"
+  ) |>
+  arrange(median_revenue)
+
+# Bar plot but with horizontal orientation created with subset data
+# median revenue(x) by property type order in highest revenue to lowest
+plot_ly(
+  data = property_revenue,
+  x = ~median_revenue,
+  y = ~reorder(property_type, median_revenue),
+  type = "bar",
+  marker = list(color = "mediumpurple"),
+  orientation = "h")|>
+  layout(
+    title = list(text = "Median Estimated Revenue by Property Type"),
+    xaxis = list(title = "Median Estimated Revenue in Last 365 Days"),
+    yaxis = list(title = "")
+  )
+```
+<br>
+The graph shows that estimated revenue changes depending on the type of property being rented. Some property types have higher median revenue than others, which suggests that the kind of rental can affect earning potential. For example, if you owned a castle you could be making nearly 60k a year. However, revenue is still also influenced by other factors like location, price, availability, and guest capacity.
+
+
+# Summary
+
+This project explored Denver Airbnb listings to better understand how short-term rentals differ across location, host behavior, and property characteristics. The main goal was to answer three core questions: how Airbnb metrics differ across geographic locations in Denver, how metrics vary by host, and how metrics vary by property type.
+
+To answer these questions, we used Denver Airbnb listing data from Inside Airbnb along with a Denver neighborhood GeoJSON file. The listings data was cleaned by selecting the variables most relevant to the project, converting price and rate variables into numeric formats, removing missing values, and preparing neighborhood and property type variables for grouping and visualization. After cleaning, we used summary statistics, interactive maps, scatter plots, box plots, and bar graphs to compare listing prices, review scores, estimated revenue, host response behavior, guest capacity, bathrooms, and property types.
+
+The geographic analysis showed that Airbnb prices and revenue are not evenly distributed across Denver. Some central neighborhoods had higher average prices and stronger revenue patterns, while many outer neighborhoods were more affordable. Guest ratings were generally high across the city, which suggests that higher prices do not always guarantee better guest satisfaction.
+
+The host analysis showed that host behavior matters, but it does not completely explain listing success. Host experience and response rate may relate to review quality, but the patterns were not perfectly consistent. The acceptance rate and revenue plot also showed that accepting more bookings does not automatically lead to higher estimated revenue. Other factors, such as property type, location, price, and availability, also influence how much a listing earns.
+
+The property analysis showed that physical listing features are important. Listings with more bathrooms generally had higher nightly prices, and listings that could accommodate more guests usually had higher estimated revenue. Property type also mattered, since some types of rentals had much higher median estimated revenue than others. It is expected that more and larger accommodations would increase pricing but our data skews when revenue and total property type are involved.
+
+Overall, this analysis helps travelers, hosts, and people interested in Denver’s short-term rental market understand the major patterns in the data. Travelers can use these findings to better understand how price and quality vary across neighborhoods and property types. Hosts can use the results to compare their listings with broader market patterns. A limitation of this analysis is that it is based on one scraped version of the data, so the results may change over time as prices, availability, and listings change. Future analysis could improve this project by comparing studying seasonal trends, or adding more variables such as amenities, minimum nights, and review text.
